@@ -71,9 +71,9 @@ function scrollHandler(positionY) {
 // Theme Toggle
 ////////////////////////////////////////////////////////////////////////////////
 function setTheme(mode) {
-  if (mode !== "light" && mode !== "dark" && mode !== "auto") {
-    console.error(`Got invalid theme mode: ${mode}. Resetting to auto.`);
-    mode = "auto";
+  if (mode !== "light" && mode !== "dark") {
+    console.error(`Got invalid theme mode: ${mode}. Resetting to dark.`);
+    mode = "dark";
   }
 
   document.body.dataset.theme = mode;
@@ -82,27 +82,13 @@ function setTheme(mode) {
 }
 
 function cycleThemeOnce() {
-  const currentTheme = localStorage.getItem("theme") || "auto";
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const currentTheme = localStorage.getItem("theme") || "dark";
 
-  if (prefersDark) {
-    // Auto (dark) -> Light -> Dark
-    if (currentTheme === "auto") {
-      setTheme("light");
-    } else if (currentTheme == "light") {
-      setTheme("dark");
-    } else {
-      setTheme("auto");
-    }
+  // Dark -> Light
+  if (currentTheme === "light") {
+    setTheme("dark");
   } else {
-    // Auto (light) -> Dark -> Light
-    if (currentTheme === "auto") {
-      setTheme("dark");
-    } else if (currentTheme == "dark") {
-      setTheme("light");
-    } else {
-      setTheme("auto");
-    }
+    setTheme("light");
   }
 }
 
@@ -147,6 +133,17 @@ function setupScrollSpy() {
 }
 
 function setupTheme() {
+  const savedTheme = localStorage.getItem("theme");
+  if (!savedTheme) {
+    const theme = window.matchMedia?.('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+    localStorage.setItem("theme", theme);
+    document.body.dataset.theme = theme;
+  } else {
+    document.body.dataset.theme = savedTheme;
+  }
+
   // Attach event handlers for toggling themes
   const buttons = document.getElementsByClassName("theme-toggle");
   Array.from(buttons).forEach((btn) => {
