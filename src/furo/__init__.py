@@ -1,19 +1,20 @@
 """A clean customisable Sphinx documentation theme."""
 
-__version__ = "2023.08.19.dev1"
+__version__ = "2024.08.06.dev1"
 
 import hashlib
 import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, cast
 
 import sphinx.application
 from docutils import nodes
 from pygments.formatters import HtmlFormatter
 from pygments.style import Style
 from pygments.token import Text
+from sphinx.builders.dirhtml import DirectoryHTMLBuilder
 from sphinx.builders.html import StandaloneHTMLBuilder
 from sphinx.environment.adapters.toctree import TocTree
 from sphinx.errors import ConfigError
@@ -71,12 +72,12 @@ def has_not_enough_items_to_show_toc(
 
     toctree = TocTree(builder.env).get_toc_for(docname, builder)
     try:
-        self_toctree = toctree[0][1]
+        self_toctree = toctree[0][1]  # type: ignore[index]
     except IndexError:
         val = True
     else:
-        # There's only the page's own toctree in there.
-        val = len(self_toctree) == 1 and self_toctree[0].tagname == "toctree"
+        # There's only the page's own toctree(s) in there.
+        val = all(entry.tagname == "toctree" for entry in self_toctree)
     return val
 
 
@@ -84,8 +85,8 @@ def get_pygments_style_colors(
     style: Style, *, fallbacks: Dict[str, str]
 ) -> Dict[str, str]:
     """Get background/foreground colors for given pygments style."""
-    background = style.background_color
-    text_colors = style.style_for_token(Text)
+    background = style.background_color  # type: ignore[attr-defined]
+    text_colors = style.style_for_token(Text)  # type: ignore[attr-defined]
     foreground = text_colors["color"]
 
     if not background:
@@ -163,8 +164,40 @@ def _add_asset_hashes(static: List[str], add_digest_to: List[str]) -> None:
         return
 
     for asset in add_digest_to:
-        index = static.index("_static/" + asset)
-        static[index].filename = _asset_hash(asset)  # type: ignore
+        try:
+            index = static.index("_static/" + asset)
+        except ValueError:
+            raise ConfigError(
+                "Furo is trying to add a digest to an asset that is not in the "
+                f"static files: {asset}. Please check conf.py for overrides of "
+                "theme-provide assets such as `html_style`."
+            )
+
+        # Make this idempotent
+        if "?digest=" in static[index].filename:  # type: ignore[attr-defined]
+            continue
+        static[index].filename = _asset_hash(asset)  # type: ignore[attr-defined]
+
+
+def _fix_canonical_url(
+    app: sphinx.application.Sphinx, pagename: str, context: Dict[str, Any]
+) -> None:
+    """Fix the canonical URL when using the dirhtml builder.
+
+    Sphinx builds a canonical URL if ``html_baseurl`` config is set. However,
+    it builds a URL ending with ".html" when using the dirhtml builder, which is
+    incorrect. Detect this and generate the correct URL for each page.
+    """
+    if (
+        not app.config.html_baseurl
+        or not isinstance(app.builder, DirectoryHTMLBuilder)
+        or not context["pageurl"]
+        or not context["pageurl"].endswith(".html")
+    ):
+        return
+
+    target = app.builder.get_target_uri(pagename)
+    context["pageurl"] = app.config.html_baseurl + target
 
 
 def _html_page_context(
@@ -175,12 +208,6 @@ def _html_page_context(
     doctree: Any,
 ) -> None:
     if "css_files" in context:
-        if "_static/styles/furo.css" not in [c.filename for c in context["css_files"]]:
-            raise ConfigError(
-                "This documentation is not using `furo.css` as the stylesheet. "
-                "If you have set `html_style` in your conf.py file, remove it."
-            )
-
         _add_asset_hashes(
             context["css_files"],
             ["styles/furo.css", "styles/furo-extensions.css"],
@@ -191,15 +218,19 @@ def _html_page_context(
             ["scripts/furo.js"],
         )
 
+    _fix_canonical_url(app, pagename, context)
+
     # Basic constants
     context["furo_version"] = __version__
 
     # Values computed from page-level context.
     context["furo_navigation_tree"] = _compute_navigation_tree(context)
     context["furo_hide_toc"] = _compute_hide_toc(
-        context, builder=app.builder, docname=pagename
+        context, builder=cast(StandaloneHTMLBuilder, app.builder), docname=pagename
     )
 
+    assert _KNOWN_STYLES_IN_USE["light"]
+    assert _KNOWN_STYLES_IN_USE["dark"]
     # Inject information about styles
     context["furo_pygments"] = {
         "light": get_pygments_style_colors(
@@ -227,10 +258,10 @@ def _builder_inited(app: sphinx.application.Sphinx) -> None:
             "and specifying it as an `html_theme` is sufficient."
         )
 
-    if not isinstance(app.builder, StandaloneHTMLBuilder) or app.builder.name not in {
-        "html",
-        "dirhtml",
-    }:
+    looks_like_html_builder = isinstance(app.builder, StandaloneHTMLBuilder) or (
+        app.builder.name in {"html", "dirhtml"}
+    )
+    if not looks_like_html_builder:
         raise ConfigError(
             "Furo is being used as an extension in a non-HTML build. "
             "This should not happen."
@@ -244,15 +275,21 @@ def _builder_inited(app: sphinx.application.Sphinx) -> None:
 
     builder = app.builder
     assert (
-        builder.highlighter is not None
+        builder.highlighter is not None  # type: ignore[attr-defined]
     ), "there should be a default style known to Sphinx"
     assert (
-        builder.dark_highlighter is None
+        builder.dark_highlighter is None  # type: ignore[attr-defined]
     ), "this shouldn't be a dark style known to Sphinx"
     update_known_styles_state(app)
 
     def _update_default(key: str, *, new_default: Any) -> None:
-        app.config.values[key] = (new_default, *app.config.values[key][1:])
+        try:
+            conf_py_settings = app.config._raw_config
+        except AttributeError:
+            pass  # Sphinx's config has changed.
+        else:
+            if key not in conf_py_settings:
+                app.config._raw_config.setdefault(key, new_default)
 
     # Change the default permalinks icon
     _update_default("html_permalinks_icon", new_default="#")
@@ -269,17 +306,25 @@ def update_known_styles_state(app: sphinx.application.Sphinx) -> None:
 
 
 def _get_light_style(app: sphinx.application.Sphinx) -> Style:
-    return app.builder.highlighter.formatter_args["style"]
+    # fmt: off
+    # For https://github.com/psf/black/issues/3869
+    return (  # type: ignore[no-any-return]
+        app
+            .builder
+            .highlighter # type: ignore[attr-defined]
+            .formatter_args["style"]
+        )
+    # fmt: on
 
 
 def _get_dark_style(app: sphinx.application.Sphinx) -> Style:
     dark_style = app.config.pygments_dark_style
-    return PygmentsBridge("html", dark_style).formatter_args["style"]
+    return cast(Style, PygmentsBridge("html", dark_style).formatter_args["style"])
 
 
-def _get_styles(formatter: HtmlFormatter, *, prefix: str) -> Iterator[str]:
+def _get_styles(formatter: "HtmlFormatter[str]", *, prefix: str) -> Iterator[str]:
     """Get styles out of a formatter, where everything has the correct prefix."""
-    for line in formatter.get_linenos_style_defs():
+    for line in formatter.get_linenos_style_defs():  # type: ignore[no-untyped-call]
         yield f"{prefix} {line}"
     yield from formatter.get_background_style_defs(prefix)
     yield from formatter.get_token_style_defs(prefix)
